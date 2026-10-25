@@ -41,18 +41,12 @@
 ; iNES header
 ;
 
-.segment "HEADER"
-
-INES_MAPPER = 0 ; 0 = NROM
-INES_MIRROR = 1 ; 0 = horizontal mirroring, 1 = vertical mirroring
-INES_SRAM   = 0 ; 1 = battery backed SRAM at $6000-7FFF
-
-.byte 'N', 'E', 'S', $1A ; ID
-.byte $02 ; 16k PRG chunk count
-.byte $01 ; 8k CHR chunk count
-.byte INES_MIRROR | (INES_SRAM << 1) | ((INES_MAPPER & $f) << 4)
-.byte (INES_MAPPER & %11110000)
-.byte $0, $0, $0, $0, $0, $0, $0, $0 ; padding
+.include "Defines/Registers0.s"
+.include "Defines/Constants0.s"
+.include "Defines/Enums0.s"
+.include "Defines/RAM0.s"
+.include "iNES_Header0.s"
+.include "Macros0.s"
 
 ;
 ; CHR ROM
@@ -79,19 +73,19 @@ INES_SRAM   = 0 ; 1 = battery backed SRAM at $6000-7FFF
 reset:
 	sei       ; mask interrupts
 	lda #0
-	sta $2000 ; disable NMI
-	sta $2001 ; disable rendering
-	sta $4015 ; disable APU sound
-	sta $4010 ; disable DMC IRQ
+	sta ControlBits ; disable NMI
+	sta RenderBits ; disable rendering
+	sta APU_SoundChannels ; disable APU sound
+	sta APU_DMCFrequency ; disable DMC IRQ
 	lda #$40
-	sta $4017 ; disable APU IRQ
+	sta APU_FrameCounter ; disable APU IRQ
 	cld       ; disable decimal mode
 	ldx #$FF
 	txs       ; initialize stack
 	; wait for first vblank
-	bit $2002
+	bit HardwareStatus
 	:
-		bit $2002
+		bit HardwareStatus
 		bpl :-
 	; clear all RAM to 0
 	lda #0
@@ -119,12 +113,12 @@ reset:
 		bne :-
 	; wait for second vblank
 	:
-		bit $2002
+		bit HardwareStatus
 		bpl :-
 	; NES is initialized, ready to begin!
 	; enable the NMI for graphical updates, and jump to our main program
 	lda #%10001000
-	sta $2000
+	sta ControlBits
 	jmp main
 
 ;
@@ -173,27 +167,27 @@ nmi:
 	cmp #2 ; nmi_ready == 2 turns rendering off
 	bne :+
 		lda #%00000000
-		sta $2001
+		sta RenderBits
 		ldx #0
 		stx nmi_ready
 		jmp @ppu_update_end
 	:
 	; sprite OAM DMA
 	ldx #0
-	stx $2003
+	stx OAMAddress
 	lda #>oam
-	sta $4014
+	sta OAMDMAReg
 	; palettes
 	lda #%10001000
-	sta $2000 ; set horizontal nametable increment
-	lda $2002
+	sta ControlBits ; set horizontal nametable increment
+	lda HardwareStatus
 	lda #$3F
-	sta $2006
-	stx $2006 ; set PPU address to $3F00
+	sta VRAMPointerReg
+	stx VRAMPointerReg ; set PPU address to $3F00
 	ldx #0
 	:
 		lda palette, X
-		sta $2007
+		sta VRAMUpdateRegister
 		inx
 		cpx #32
 		bcc :-
@@ -203,13 +197,13 @@ nmi:
 	bcs @scroll
 	@nmt_update_loop:
 		lda nmt_update, X
-		sta $2006
+		sta VRAMPointerReg
 		inx
 		lda nmt_update, X
-		sta $2006
+		sta VRAMPointerReg
 		inx
 		lda nmt_update, X
-		sta $2007
+		sta VRAMUpdateRegister
 		inx
 		cpx nmt_update_len
 		bcc @nmt_update_loop
@@ -219,14 +213,14 @@ nmi:
 	lda scroll_nmt
 	and #%00000011 ; keep only lowest 2 bits to prevent error
 	ora #%10001000
-	sta $2000
+	sta ControlBits
 	lda scroll_x
-	sta $2005
+	sta VRAMRenderAreaReg
 	lda scroll_y
-	sta $2005
+	sta VRAMRenderAreaReg
 	; enable rendering
 	lda #%00011110
-	sta $2001
+	sta RenderBits
 	; flag PPU update complete
 	ldx #0
 	stx nmi_ready
@@ -290,13 +284,13 @@ ppu_off:
 ;   Y = 64- 95 nametable $2800
 ;   Y = 96-127 nametable $2C00
 ppu_address_tile:
-	lda $2002 ; reset latch
+	lda HardwareStatus ; reset latch
 	tya
 	lsr
 	lsr
 	lsr
 	ora #$20 ; high bits of Y + $20
-	sta $2006
+	sta VRAMPointerReg
 	tya
 	asl
 	asl
@@ -306,7 +300,7 @@ ppu_address_tile:
 	sta temp
 	txa
 	ora temp
-	sta $2006 ; low bits of Y + X
+	sta VRAMPointerReg ; low bits of Y + X
 	rts
 
 ; ppu_update_tile: can be used with rendering on, sets the tile at X/Y to tile A next time you call ppu_update
@@ -381,14 +375,14 @@ gamepad: .res 1
 gamepad_poll:
 	; strobe the gamepad to latch current button state
 	lda #1
-	sta $4016
+	sta ControllerReg
 	lda #0
-	sta $4016
-	; read 8 bytes from the interface at $4016
+	sta ControllerReg
+	; read 8 bytes from the interface at ControllerReg
 	ldx #8
 	:
 		pha
-		lda $4016
+		lda ControllerReg
 		; combine low two bits and store in carry bit
 		and #%00000011
 		cmp #%00000001
